@@ -829,47 +829,6 @@ class Server {
             throw new Exception\NotImplemented('PUT with Content-Range is not allowed.');
         }
 
-        // Intercepting the Finder problem
-        if (($expected = $this->httpRequest->getHeader('X-Expected-Entity-Length')) && $expected > 0) {
-
-            /**
-            Many webservers will not cooperate well with Finder PUT requests,
-            because it uses 'Chunked' transfer encoding for the request body.
-
-            The symptom of this problem is that Finder sends files to the
-            server, but they arrive as 0-length files in PHP.
-
-            If we don't do anything, the user might think they are uploading
-            files successfully, but they end up empty on the server. Instead,
-            we throw back an error if we detect this.
-
-            The reason Finder uses Chunked, is because it thinks the files
-            might change as it's being uploaded, and therefore the
-            Content-Length can vary.
-
-            Instead it sends the X-Expected-Entity-Length header with the size
-            of the file at the very start of the request. If this header is set,
-            but we don't get a request body we will fail the request to
-            protect the end-user.
-            */
-
-            // Only reading first byte
-            $firstByte = fread($body,1);
-            if (strlen($firstByte)!==1) {
-                throw new Exception\Forbidden('This server is not compatible with OS/X finder. Consider using a different WebDAV client or webserver.');
-            }
-
-            // The body needs to stay intact, so we copy everything to a
-            // temporary stream.
-
-            $newBody = fopen('php://temp','r+');
-            fwrite($newBody,$firstByte);
-            stream_copy_to_stream($body, $newBody);
-            rewind($newBody);
-
-            $body = $newBody;
-
-        }
 
         if ($this->tree->nodeExists($uri)) {
 
@@ -882,7 +841,26 @@ class Server {
             if (!($node instanceof IFile)) throw new Exception\Conflict('PUT is not allowed on non-files.');
             if (!$this->broadcastEvent('beforeWriteContent',array($uri, $node, &$body))) return false;
 
-            $etag = $node->put($body);
+
+            // Intercepting the Finder problem
+            if (($expected = $this->httpRequest->getHeader('X-Expected-Entity-Length')) && $expected > 0) {
+              // Only reading first byte
+              $firstByte = fread($body,1);
+              if (strlen($firstByte)!==1) {
+                  throw new Exception\Forbidden('This server is not compatible with OS/X finder. Consider using a different WebDAV client or webserver.');
+              }
+
+              // forcing the firstByte string into a stream to be compatible with the iFile interface as we
+              // can't rewind the body
+              $stream = fopen('data://text/plain,' . $firstByte,'r');
+              // put the firstByte
+              $node->put($stream);
+              // and the body
+              $etag = $node->put($body, FILE_APPEND);
+
+            } else {
+              $etag = $node->put($body);
+            }
 
             $this->broadcastEvent('afterWriteContent',array($uri, $node));
 
